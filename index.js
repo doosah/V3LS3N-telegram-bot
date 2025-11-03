@@ -4,6 +4,7 @@
 import cron from 'node-cron';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
+import http from 'http';
 
 dotenv.config();
 
