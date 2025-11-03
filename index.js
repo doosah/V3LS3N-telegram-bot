@@ -319,56 +319,68 @@ async function sendFinalReport(dateISO, shiftType) {
     console.log(`📊 Отправка итогового отчета: ${dateDisplay}, смена: ${shiftType}`);
     
     const reports = await loadReportsFromSupabase(dateISO, shiftType);
+    console.log(`📊 Загружено из Supabase: ${reports.operational.length} операционных, ${reports.personnel.length} персонала`);
+    
     const shiftName = shiftType === 'day' ? 'Дневная' : 'Ночная';
     
     // Формируем простую подпись для изображения
     const caption = `📊 <b>Сводная таблица</b>\n📅 Дата: ${dateDisplay}\n🌓 Смена: ${shiftName}`;
     
     try {
-        // Проверяем, есть ли данные для таблицы
-        console.log(`📊 Данные для таблицы: ${reports.operational.length} операционных, ${reports.personnel.length} персонала`);
-        
-        // Генерируем HTML таблицы
-        console.log('📊 Генерация таблицы...');
+        // Преобразуем данные для таблицы
+        console.log('📊 Преобразование данных для таблицы...');
         const transformedReports = transformSupabaseDataForTable(reports.operational, reports.personnel, dateISO, shiftType);
         console.log(`📊 Преобразованные данные: ${JSON.stringify(Object.keys(transformedReports))}`);
         
+        // Генерируем HTML таблицы
+        console.log('📊 Генерация HTML таблицы...');
         const html = generateTableHTML(transformedReports, dateISO, shiftType);
-        console.log(`📊 HTML сгенерирован, длина: ${html.length} символов`);
+        console.log(`✅ HTML сгенерирован, длина: ${html.length} символов`);
+        
+        if (html.length < 100) {
+            throw new Error(`HTML слишком короткий (${html.length} символов), возможно нет данных`);
+        }
         
         // Конвертируем в изображение
-        console.log('🖼️ Конвертация в изображение через Puppeteer...');
+        console.log('🖼️ Конвертация HTML в изображение через Puppeteer...');
+        let imageBuffer;
         try {
-            const imageBuffer = await htmlToImage(html);
+            imageBuffer = await htmlToImage(html);
             
             if (!imageBuffer || imageBuffer.length === 0) {
                 throw new Error('Изображение не сгенерировано (пустой буфер)');
             }
             
-            console.log(`✅ Изображение сгенерировано, размер: ${imageBuffer.length} байт`);
-            
-            // Отправляем изображение
-            console.log('📤 Отправка изображения в Telegram...');
-            const photoResult = await sendTelegramPhoto(imageBuffer, caption);
-            
-            if (!photoResult) {
-                // Если не удалось отправить изображение, отправляем текстовое сообщение
-                console.log('⚠️ Не удалось отправить изображение, отправляю текстовое сообщение...');
-                return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось сгенерировать изображение таблицы</i>');
-            }
-            
-            return photoResult;
+            console.log(`✅ Изображение сгенерировано успешно, размер: ${imageBuffer.length} байт (${(imageBuffer.length / 1024).toFixed(2)} KB)`);
         } catch (puppeteerError) {
-            console.error('❌ Ошибка Puppeteer:', puppeteerError.message);
+            console.error('❌ Ошибка Puppeteer при генерации изображения:', puppeteerError.message);
             console.error('Stack:', puppeteerError.stack);
-            throw puppeteerError;
+            throw new Error(`Не удалось сгенерировать изображение: ${puppeteerError.message}`);
         }
+        
+        // Отправляем изображение
+        console.log('📤 Отправка изображения в Telegram...');
+        const photoResult = await sendTelegramPhoto(imageBuffer, caption);
+        
+        if (!photoResult) {
+            // Если не удалось отправить изображение, отправляем текстовое сообщение
+            console.log('⚠️ Не удалось отправить изображение в Telegram, отправляю текстовое сообщение...');
+            return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось отправить изображение таблицы</i>');
+        }
+        
+        console.log('✅ Итоговый отчёт успешно отправлен в Telegram');
+        return photoResult;
     } catch (error) {
-        console.error('❌ Ошибка генерации изображения:', error.message);
+        console.error('❌ Критическая ошибка генерации/отправки отчёта:', error.message);
         console.error('Stack:', error.stack);
         // Отправляем текстовое сообщение в случае ошибки
-        console.log('📤 Отправка текстового сообщения вместо изображения...');
-        return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось сгенерировать изображение таблицы: ' + error.message + '</i>');
+        console.log('📤 Отправка текстового сообщения об ошибке...');
+        return await sendTelegramMessage(
+            caption + 
+            '\n\n❌ <b>Ошибка генерации изображения</b>\n' +
+            `<i>${error.message}</i>\n\n` +
+            'Проверьте логи на сервере для подробностей.'
+        );
     }
 }
 
@@ -489,50 +501,104 @@ const server = http.createServer(async (req, res) => {
                 status: 'error',
                 message: error.message
             }));
-        }
-    } else if (req.url.startsWith('/send-report') && req.method === 'GET') {
-        // Ручная отправка отчёта
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        try {
-            // Парсим параметры: ?shift=day|night (по умолчанию определяем по времени)
-            const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-            let shiftType = urlObj.searchParams.get('shift');
-            
-            // Если не указана смена, определяем по текущему времени
-            if (!shiftType) {
-                const now = new Date();
-                const moscowTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
-                const hour = moscowTime.getHours();
-                // Дневная смена: 6:00 - 18:00, Ночная: 18:00 - 6:00
-                shiftType = (hour >= 6 && hour < 18) ? 'day' : 'night';
+        } else if (req.url.startsWith('/send-report') && req.method === 'GET') {
+            // Ручная отправка отчёта
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            try {
+                // Парсим параметры: ?shift=day|night (по умолчанию определяем по времени)
+                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+                let shiftType = urlObj.searchParams.get('shift');
+                
+                // Если не указана смена, определяем по текущему времени
+                if (!shiftType) {
+                    const now = new Date();
+                    const moscowTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+                    const hour = moscowTime.getHours();
+                    // Дневная смена: 6:00 - 18:00, Ночная: 18:00 - 6:00
+                    shiftType = (hour >= 6 && hour < 18) ? 'day' : 'night';
+                }
+                
+                const dateISO = getCurrentDateISO();
+                console.log(`📊 Ручная отправка отчёта: ${getCurrentDate()}, смена: ${shiftType}`);
+                
+                const result = await sendFinalReport(dateISO, shiftType);
+                
+                res.end(JSON.stringify({ 
+                    status: result ? 'success' : 'error',
+                    message: result ? `Отчёт отправлен (${shiftType === 'day' ? 'Дневная' : 'Ночная'} смена)` : 'Ошибка отправки',
+                    date: getCurrentDate(),
+                    shift: shiftType
+                }));
+            } catch (error) {
+                res.end(JSON.stringify({ 
+                    status: 'error',
+                    message: error.message
+                }));
             }
-            
-            const dateISO = getCurrentDateISO();
-            console.log(`📊 Ручная отправка отчёта: ${getCurrentDate()}, смена: ${shiftType}`);
-            
-            const result = await sendFinalReport(dateISO, shiftType);
-            
-            res.end(JSON.stringify({ 
-                status: result ? 'success' : 'error',
-                message: result ? `Отчёт отправлен (${shiftType === 'day' ? 'Дневная' : 'Ночная'} смена)` : 'Ошибка отправки',
-                date: getCurrentDate(),
-                shift: shiftType
-            }));
-        } catch (error) {
-            res.end(JSON.stringify({ 
-                status: 'error',
-                message: error.message
-            }));
+        } else if (req.url.startsWith('/test-image') && req.method === 'GET') {
+            // Тестовый endpoint для проверки генерации изображения
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            try {
+                const dateISO = getCurrentDateISO();
+                const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+                let shiftType = urlObj.searchParams.get('shift') || 'day';
+                
+                console.log(`🧪 Тест генерации изображения: ${getCurrentDate()}, смена: ${shiftType}`);
+                
+                // Загружаем данные
+                const reports = await loadReportsFromSupabase(dateISO, shiftType);
+                console.log(`📊 Загружено: ${reports.operational.length} операционных, ${reports.personnel.length} персонала`);
+                
+                // Преобразуем данные
+                const transformedReports = transformSupabaseDataForTable(reports.operational, reports.personnel, dateISO, shiftType);
+                console.log(`📊 Преобразовано: ${JSON.stringify(Object.keys(transformedReports))}`);
+                
+                // Генерируем HTML
+                const html = generateTableHTML(transformedReports, dateISO, shiftType);
+                console.log(`📊 HTML длина: ${html.length} символов`);
+                
+                // Генерируем изображение
+                console.log('🖼️ Генерация изображения...');
+                const imageBuffer = await htmlToImage(html);
+                
+                if (!imageBuffer || imageBuffer.length === 0) {
+                    throw new Error('Изображение пустое');
+                }
+                
+                console.log(`✅ Изображение создано: ${imageBuffer.length} байт`);
+                
+                // Отправляем изображение в ответ (base64 для теста)
+                const base64Image = imageBuffer.toString('base64');
+                
+                res.end(JSON.stringify({ 
+                    status: 'success',
+                    message: 'Изображение сгенерировано успешно',
+                    imageSize: imageBuffer.length,
+                    htmlLength: html.length,
+                    reportsCount: reports.operational.length,
+                    dataKeys: Object.keys(transformedReports),
+                    imageBase64: base64Image.substring(0, 100) + '...' // Первые 100 символов для проверки
+                }));
+            } catch (error) {
+                console.error('❌ Ошибка теста:', error);
+                res.end(JSON.stringify({ 
+                    status: 'error',
+                    message: error.message,
+                    stack: error.stack
+                }));
+            }
+        } else {
+            res.writeHead(404);
+            res.end('Not found');
         }
-    } else {
-        res.writeHead(404);
-        res.end('Not found');
-    }
 });
 
 server.listen(PORT, () => {
     console.log(`✅ Сервер запущен на порту ${PORT}`);
     console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+    console.log(`🔗 Test Telegram: http://localhost:${PORT}/test`);
+    console.log(`🔗 Manual Report: http://localhost:${PORT}/send-report`);
+    console.log(`🔗 Test Image: http://localhost:${PORT}/test-image`);
 });
 
 // Обработка ошибок
