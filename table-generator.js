@@ -39,6 +39,18 @@ const CATEGORIES = [
 // Функция удалена - используется transformSupabaseDataForTable из index.js
 
 /**
+ * Парсинг времени в минуты (HH:MM -> minutes)
+ */
+function parseTimeToMin(timeStr) {
+    if (!timeStr || typeof timeStr !== 'string') return NaN;
+    const parts = timeStr.split(':');
+    if (parts.length !== 2) return NaN;
+    const h = parseInt(parts[0]) || 0;
+    const m = parseInt(parts[1]) || 0;
+    return h * 60 + m;
+}
+
+/**
  * Генерация HTML таблицы
  */
 export function generateTableHTML(reports, dateISO, shiftType) {
@@ -59,35 +71,79 @@ export function generateTableHTML(reports, dateISO, shiftType) {
             padding: 20px;
         }
         .table-wrapper {
-            border: 1px solid #2d2d2d;
+            border: 1px solid rgba(71, 85, 105, 0.3);
             border-radius: 8px;
             overflow: auto;
             background: rgba(0, 0, 0, 0.85);
         }
         table {
             width: 100%;
-            border-collapse: collapse;
+            min-width: 600px;
+            border-collapse: separate;
+            border-spacing: 0;
             font-size: 10px;
+            table-layout: fixed;
         }
         th, td {
             border: 1px solid rgba(71, 85, 105, 0.3);
-            padding: 4px 6px;
+            padding: 4px 3px;
             text-align: center;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.2;
         }
         th {
-            background: linear-gradient(135deg, #2d2d2d 0%, #1e3a5f 100%);
-            font-weight: 600;
+            font-size: 9px;
+            line-height: 1.3;
+            padding: 6px 4px;
             position: sticky;
             top: 0;
+            font-weight: 600;
             z-index: 10;
+            background: linear-gradient(135deg, rgba(45, 45, 45, 0.95) 0%, rgba(30, 58, 95, 0.95) 100%);
+            color: #e0e0e0;
+        }
+        td:first-child, th:first-child {
+            width: 70px;
+            min-width: 70px;
+            max-width: 70px;
+            position: sticky;
+            left: 0;
+            z-index: 5;
+            font-size: 9px;
+            background: rgba(0, 0, 0, 0.9);
+        }
+        th:first-child {
+            z-index: 15;
+        }
+        td:nth-child(2), th:nth-child(2) {
+            width: 140px;
+            min-width: 140px;
+            max-width: 140px;
+            position: sticky;
+            left: 70px;
+            z-index: 5;
+            text-align: left;
+            padding-left: 6px;
+            font-size: 9px;
+            background: rgba(0, 0, 0, 0.9);
+        }
+        th:nth-child(n+3), td:nth-child(n+3) {
+            min-width: 35px;
+            max-width: 50px;
+            padding: 3px 2px;
+            font-size: 9px;
         }
         td.negative, td.bad {
             color: #ee0000;
             font-weight: 900;
+            text-shadow: 0 0 8px rgba(255, 0, 0, 0.8), 0 0 12px rgba(238, 0, 0, 0.6);
         }
         td.positive, td.good {
             color: #43e97b;
+            font-weight: 600;
+            text-shadow: 0 0 8px rgba(67, 233, 123, 0.4);
         }
         .summary-total {
             background: linear-gradient(135deg, #2d2d2d 0%, #1e3a5f 50%, #404040 100%);
@@ -98,11 +154,13 @@ export function generateTableHTML(reports, dateISO, shiftType) {
             font-weight: 600;
             margin-top: 10px;
             border-radius: 8px;
+            text-shadow: 0 2px 10px rgba(255, 255, 255, 0.3);
         }
         h2 {
             text-align: center;
             margin-bottom: 15px;
             color: #ffffff;
+            font-size: 16px;
         }
     </style>
 </head>
@@ -176,18 +234,40 @@ export function generateTableHTML(reports, dateISO, shiftType) {
                 } else if (cat.type === 'double') {
                     cat.fields.forEach(f => html += `<td>${data?.[f.n] || '-'}</td>`);
                 } else if (cat.type === 'time') {
-                    html += `<td>${data?.plan || '-'}</td><td>${data?.fact || '-'}</td>`;
-                    const delta = data?.delta || '';
-                    const isGood = delta === 'Норма';
+                    const plan = data?.plan || '';
+                    const fact = data?.fact || '';
+                    html += `<td>${plan || '-'}</td><td>${fact || '-'}</td>`;
+                    
+                    // Вычисляем дельту: если факт <= план, то "Норма" (✅), иначе "Отклонение" (❌)
+                    let delta = '';
+                    let isGood = false;
+                    if (plan && fact) {
+                        const planMin = parseTimeToMin(plan);
+                        const factMin = parseTimeToMin(fact);
+                        if (!isNaN(planMin) && !isNaN(factMin)) {
+                            isGood = factMin <= planMin;
+                            delta = isGood ? '✅' : '❌';
+                        } else {
+                            delta = '❌';
+                        }
+                    }
                     html += `<td class="${isGood ? 'good' : (delta ? 'bad' : '')}">${delta || '-'}</td>`;
                 } else if (cat.type === 'number') {
-                    html += `<td>${data?.plan || '-'}</td><td>${data?.fact || '-'}</td>`;
-                    const delta = data?.delta;
-                    const deltaClass = typeof delta === 'number' ? (delta >= 0 ? 'positive' : 'negative') : '';
-                    html += `<td class="${deltaClass}">${delta !== undefined ? delta : '-'}</td>`;
+                    const plan = parseFloat(data?.plan) || 0;
+                    const fact = parseFloat(data?.fact) || 0;
+                    html += `<td>${plan || '-'}</td><td>${fact || '-'}</td>`;
+                    
+                    // Вычисляем дельту: факт - план
+                    let delta = '';
+                    let deltaClass = '';
+                    if (plan !== 0 || fact !== 0) {
+                        delta = fact - plan;
+                        deltaClass = delta >= 0 ? 'positive' : 'negative';
+                    }
+                    html += `<td class="${deltaClass}">${delta !== '' ? delta : '-'}</td>`;
                     
                     if (cat.name === 'Обработка') {
-                        totalVolumePlan += parseInt(data?.plan) || 0;
+                        totalVolumePlan += plan;
                     }
                 }
             });

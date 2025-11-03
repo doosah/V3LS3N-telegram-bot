@@ -233,16 +233,31 @@ function checkReportsFilled(reports, warehouses, dateISO, shiftType) {
     const supabaseDate = dateISO;
     
     warehouses.forEach(warehouse => {
-        const hasOperational = reports.operational.some(r => 
-            r.warehouse === warehouse && r.report_date === supabaseDate && r.shift_type === shiftType
-        );
-        const hasPersonnel = reports.personnel.some(r => 
+        const operationalReport = reports.operational.find(r => 
             r.warehouse === warehouse && r.report_date === supabaseDate && r.shift_type === shiftType
         );
         
-        // Считаем заполненным, если есть хотя бы один отчет
-        if (hasOperational || hasPersonnel) {
-            filled[warehouse] = true;
+        // Проверяем, есть ли данные в операционном отчёте
+        // Считаем заполненным, если есть отчёт И в нём есть данные (не пустой объект)
+        if (operationalReport && operationalReport.data) {
+            const data = operationalReport.data;
+            // Проверяем, есть ли хотя бы одно поле с реальными данными (не null, не undefined, не пустая строка)
+            const hasData = Object.keys(data).length > 0 && 
+                           Object.values(data).some(val => {
+                               if (val === null || val === undefined || val === '') return false;
+                               if (typeof val === 'object' && Object.keys(val).length === 0) return false;
+                               if (typeof val === 'object') {
+                                   // Для вложенных объектов проверяем наличие значений
+                                   return Object.values(val).some(v => v !== null && v !== undefined && v !== '');
+                               }
+                               return true;
+                           });
+            
+            if (hasData) {
+                filled[warehouse] = true;
+            } else {
+                missing[warehouse] = true;
+            }
         } else {
             missing[warehouse] = true;
         }
