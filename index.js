@@ -319,28 +319,10 @@ async function sendFinalReport(dateISO, shiftType) {
     console.log(`📊 Отправка итогового отчета: ${dateDisplay}, смена: ${shiftType}`);
     
     const reports = await loadReportsFromSupabase(dateISO, shiftType);
-    const { missing } = checkReportsFilled(reports, WAREHOUSES, dateISO, shiftType);
-    
     const shiftName = shiftType === 'day' ? 'Дневная' : 'Ночная';
     
-    // Формируем подпись
-    let caption = `📊 <b>Сводная таблица</b>\n\n` +
-                 `📅 Дата: ${dateDisplay}\n` +
-                 `🌓 Смена: ${shiftName}\n\n`;
-    
-    if (Object.keys(missing).length > 0) {
-        const tags = formatMissingWarehouses(missing);
-        caption += `⚠️ <b>Не заполнено:</b>\n${tags}\n\n`;
-    } else {
-        caption += `✅ Все отчеты заполнены\n\n`;
-    }
-    
-    const operationalCount = reports.operational.length;
-    const personnelCount = reports.personnel.length;
-    caption += `📈 Статистика:\n` +
-               `• Операционные отчеты: ${operationalCount}\n` +
-               `• Отчеты по персоналу: ${personnelCount}\n` +
-               `• Всего складов: ${WAREHOUSES.length}`;
+    // Формируем простую подпись для изображения
+    const caption = `📊 <b>Сводная таблица</b>\n📅 Дата: ${dateDisplay}\n🌓 Смена: ${shiftName}`;
     
     try {
         // Проверяем, есть ли данные для таблицы
@@ -372,7 +354,7 @@ async function sendFinalReport(dateISO, shiftType) {
             if (!photoResult) {
                 // Если не удалось отправить изображение, отправляем текстовое сообщение
                 console.log('⚠️ Не удалось отправить изображение, отправляю текстовое сообщение...');
-                return await sendTelegramMessage(caption);
+                return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось сгенерировать изображение таблицы</i>');
             }
             
             return photoResult;
