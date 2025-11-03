@@ -328,37 +328,50 @@ async function sendFinalReport(dateISO, shiftType) {
                `• Всего складов: ${WAREHOUSES.length}`;
     
     try {
+        // Проверяем, есть ли данные для таблицы
+        console.log(`📊 Данные для таблицы: ${reports.operational.length} операционных, ${reports.personnel.length} персонала`);
+        
         // Генерируем HTML таблицы
         console.log('📊 Генерация таблицы...');
         const transformedReports = transformSupabaseDataForTable(reports.operational, reports.personnel, dateISO, shiftType);
+        console.log(`📊 Преобразованные данные: ${JSON.stringify(Object.keys(transformedReports))}`);
+        
         const html = generateTableHTML(transformedReports, dateISO, shiftType);
+        console.log(`📊 HTML сгенерирован, длина: ${html.length} символов`);
         
         // Конвертируем в изображение
-        console.log('🖼️ Конвертация в изображение...');
-        const imageBuffer = await htmlToImage(html);
-        
-        if (!imageBuffer || imageBuffer.length === 0) {
-            throw new Error('Изображение не сгенерировано');
+        console.log('🖼️ Конвертация в изображение через Puppeteer...');
+        try {
+            const imageBuffer = await htmlToImage(html);
+            
+            if (!imageBuffer || imageBuffer.length === 0) {
+                throw new Error('Изображение не сгенерировано (пустой буфер)');
+            }
+            
+            console.log(`✅ Изображение сгенерировано, размер: ${imageBuffer.length} байт`);
+            
+            // Отправляем изображение
+            console.log('📤 Отправка изображения в Telegram...');
+            const photoResult = await sendTelegramPhoto(imageBuffer, caption);
+            
+            if (!photoResult) {
+                // Если не удалось отправить изображение, отправляем текстовое сообщение
+                console.log('⚠️ Не удалось отправить изображение, отправляю текстовое сообщение...');
+                return await sendTelegramMessage(caption);
+            }
+            
+            return photoResult;
+        } catch (puppeteerError) {
+            console.error('❌ Ошибка Puppeteer:', puppeteerError.message);
+            console.error('Stack:', puppeteerError.stack);
+            throw puppeteerError;
         }
-        
-        console.log(`✅ Изображение сгенерировано, размер: ${imageBuffer.length} байт`);
-        
-        // Отправляем изображение
-        console.log('📤 Отправка изображения в Telegram...');
-        const photoResult = await sendTelegramPhoto(imageBuffer, caption);
-        
-        if (!photoResult) {
-            // Если не удалось отправить изображение, отправляем текстовое сообщение
-            console.log('⚠️ Не удалось отправить изображение, отправляю текстовое сообщение...');
-            return await sendTelegramMessage(caption);
-        }
-        
-        return photoResult;
     } catch (error) {
-        console.error('❌ Ошибка генерации изображения:', error);
+        console.error('❌ Ошибка генерации изображения:', error.message);
+        console.error('Stack:', error.stack);
         // Отправляем текстовое сообщение в случае ошибки
         console.log('📤 Отправка текстового сообщения вместо изображения...');
-        return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось сгенерировать изображение таблицы</i>');
+        return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось сгенерировать изображение таблицы: ' + error.message + '</i>');
     }
 }
 

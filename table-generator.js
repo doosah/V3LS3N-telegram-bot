@@ -218,26 +218,54 @@ export function generateTableHTML(reports, dateISO, shiftType) {
  * Конвертация HTML в изображение через Puppeteer
  */
 export async function htmlToImage(html) {
-    const puppeteer = (await import('puppeteer')).default;
+    console.log('🔧 Импорт Puppeteer...');
+    let puppeteer;
+    try {
+        puppeteer = (await import('puppeteer')).default;
+        console.log('✅ Puppeteer импортирован');
+    } catch (importError) {
+        console.error('❌ Ошибка импорта Puppeteer:', importError.message);
+        throw new Error('Puppeteer не установлен. Установите: npm install puppeteer');
+    }
     
+    console.log('🚀 Запуск браузера Puppeteer...');
     const browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu'
+        ]
     });
+    
+    console.log('✅ Браузер запущен');
     
     try {
         const page = await browser.newPage();
-        await page.setContent(html, { waitUntil: 'networkidle0' });
+        console.log('📄 Установка контента...');
+        await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 });
+        console.log('📐 Установка viewport...');
         await page.setViewport({ width: 1920, height: 1080 });
         
+        console.log('📸 Создание скриншота...');
         const screenshot = await page.screenshot({
             type: 'png',
             fullPage: true,
             clip: null
         });
         
+        console.log('✅ Скриншот создан');
         return screenshot;
+    } catch (screenshotError) {
+        console.error('❌ Ошибка создания скриншота:', screenshotError.message);
+        throw screenshotError;
     } finally {
+        console.log('🔒 Закрытие браузера...');
         await browser.close();
     }
 }
