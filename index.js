@@ -110,28 +110,40 @@ async function sendTelegramMessage(text, chatId = TELEGRAM_CHAT_ID) {
  */
 async function sendTelegramPhoto(buffer, caption = '', chatId = TELEGRAM_CHAT_ID) {
     try {
-        const FormData = (await import('form-data')).default;
+        const FormDataModule = await import('form-data');
+        const FormData = FormDataModule.default;
         const formData = new FormData();
+        
         formData.append('chat_id', chatId);
-        formData.append('photo', buffer, { filename: 'table.png' });
-        formData.append('caption', caption);
-        formData.append('parse_mode', 'HTML');
+        formData.append('photo', buffer, {
+            filename: 'table.png',
+            contentType: 'image/png'
+        });
+        if (caption) {
+            formData.append('caption', caption);
+            formData.append('parse_mode', 'HTML');
+        }
+        
+        console.log(`📤 Отправка изображения (${buffer.length} байт) в Telegram...`);
         
         const response = await fetch(`${BOT_API_URL}/sendPhoto`, {
             method: 'POST',
-            body: formData
+            body: formData,
+            headers: formData.getHeaders ? formData.getHeaders() : {}
         });
         
         const data = await response.json();
+        
         if (data.ok) {
             console.log('✅ Изображение отправлено в Telegram');
             return true;
         } else {
-            console.error('❌ Ошибка отправки изображения в Telegram:', data);
+            console.error('❌ Ошибка отправки изображения в Telegram:', JSON.stringify(data, null, 2));
             return false;
         }
     } catch (error) {
-        console.error('❌ Ошибка отправки изображения в Telegram:', error);
+        console.error('❌ Ошибка отправки изображения в Telegram:', error.message);
+        console.error('Stack:', error.stack);
         return false;
     }
 }
@@ -296,15 +308,6 @@ async function sendFinalReport(dateISO, shiftType) {
     
     const shiftName = shiftType === 'day' ? 'Дневная' : 'Ночная';
     
-    // Генерируем HTML таблицы
-    console.log('📊 Генерация таблицы...');
-    const transformedReports = transformSupabaseDataForTable(reports.operational, reports.personnel, dateISO, shiftType);
-    const html = generateTableHTML(transformedReports, dateISO, shiftType);
-    
-    // Конвертируем в изображение
-    console.log('🖼️ Конвертация в изображение...');
-    const imageBuffer = await htmlToImage(html);
-    
     // Формируем подпись
     let caption = `📊 <b>Сводная таблица</b>\n\n` +
                  `📅 Дата: ${dateDisplay}\n` +
@@ -324,9 +327,39 @@ async function sendFinalReport(dateISO, shiftType) {
                `• Отчеты по персоналу: ${personnelCount}\n` +
                `• Всего складов: ${WAREHOUSES.length}`;
     
-    // Отправляем изображение
-    console.log('📤 Отправка изображения в Telegram...');
-    return await sendTelegramPhoto(imageBuffer, caption);
+    try {
+        // Генерируем HTML таблицы
+        console.log('📊 Генерация таблицы...');
+        const transformedReports = transformSupabaseDataForTable(reports.operational, reports.personnel, dateISO, shiftType);
+        const html = generateTableHTML(transformedReports, dateISO, shiftType);
+        
+        // Конвертируем в изображение
+        console.log('🖼️ Конвертация в изображение...');
+        const imageBuffer = await htmlToImage(html);
+        
+        if (!imageBuffer || imageBuffer.length === 0) {
+            throw new Error('Изображение не сгенерировано');
+        }
+        
+        console.log(`✅ Изображение сгенерировано, размер: ${imageBuffer.length} байт`);
+        
+        // Отправляем изображение
+        console.log('📤 Отправка изображения в Telegram...');
+        const photoResult = await sendTelegramPhoto(imageBuffer, caption);
+        
+        if (!photoResult) {
+            // Если не удалось отправить изображение, отправляем текстовое сообщение
+            console.log('⚠️ Не удалось отправить изображение, отправляю текстовое сообщение...');
+            return await sendTelegramMessage(caption);
+        }
+        
+        return photoResult;
+    } catch (error) {
+        console.error('❌ Ошибка генерации изображения:', error);
+        // Отправляем текстовое сообщение в случае ошибки
+        console.log('📤 Отправка текстового сообщения вместо изображения...');
+        return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось сгенерировать изображение таблицы</i>');
+    }
 }
 
 /**
