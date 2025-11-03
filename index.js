@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import http from 'http';
+import { generateTableHTML, htmlToImage } from './table-generator.js';
 
 dotenv.config();
 
@@ -100,6 +101,37 @@ async function sendTelegramMessage(text, chatId = TELEGRAM_CHAT_ID) {
         }
     } catch (error) {
         console.error('❌ Ошибка отправки в Telegram:', error);
+        return false;
+    }
+}
+
+/**
+ * Отправка изображения в Telegram
+ */
+async function sendTelegramPhoto(buffer, caption = '', chatId = TELEGRAM_CHAT_ID) {
+    try {
+        const FormData = (await import('form-data')).default;
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('photo', buffer, { filename: 'table.png' });
+        formData.append('caption', caption);
+        formData.append('parse_mode', 'HTML');
+        
+        const response = await fetch(`${BOT_API_URL}/sendPhoto`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        if (data.ok) {
+            console.log('✅ Изображение отправлено в Telegram');
+            return true;
+        } else {
+            console.error('❌ Ошибка отправки изображения в Telegram:', data);
+            return false;
+        }
+    } catch (error) {
+        console.error('❌ Ошибка отправки изображения в Telegram:', error);
         return false;
     }
 }
@@ -253,7 +285,7 @@ async function sendReminder(dateISO, shiftType) {
 }
 
 /**
- * Отправка итогового отчета
+ * Отправка итогового отчета с изображением таблицы
  */
 async function sendFinalReport(dateISO, shiftType) {
     const dateDisplay = getCurrentDate(); // Для отображения в сообщении
@@ -264,30 +296,59 @@ async function sendFinalReport(dateISO, shiftType) {
     
     const shiftName = shiftType === 'day' ? 'Дневная' : 'Ночная';
     
-    let message = `📊 <b>Итоговый отчет</b>\n\n` +
+    // Генерируем HTML таблицы
+    console.log('📊 Генерация таблицы...');
+    const transformedReports = transformSupabaseDataForTable(reports.operational, reports.personnel, dateISO, shiftType);
+    const html = generateTableHTML(transformedReports, dateISO, shiftType);
+    
+    // Конвертируем в изображение
+    console.log('🖼️ Конвертация в изображение...');
+    const imageBuffer = await htmlToImage(html);
+    
+    // Формируем подпись
+    let caption = `📊 <b>Сводная таблица</b>\n\n` +
                  `📅 Дата: ${dateDisplay}\n` +
                  `🌓 Смена: ${shiftName}\n\n`;
     
     if (Object.keys(missing).length > 0) {
         const tags = formatMissingWarehouses(missing);
-        message += `⚠️ <b>Не заполнено:</b>\n${tags}\n\n`;
+        caption += `⚠️ <b>Не заполнено:</b>\n${tags}\n\n`;
     } else {
-        message += `✅ Все отчеты заполнены\n\n`;
+        caption += `✅ Все отчеты заполнены\n\n`;
     }
     
-    // Добавить сводные данные
     const operationalCount = reports.operational.length;
     const personnelCount = reports.personnel.length;
-    message += `📈 Статистика:\n` +
+    caption += `📈 Статистика:\n` +
                `• Операционные отчеты: ${operationalCount}\n` +
                `• Отчеты по персоналу: ${personnelCount}\n` +
                `• Всего складов: ${WAREHOUSES.length}`;
     
-    // Здесь можно добавить отправку Excel файла
-    // const excelBuffer = await generateExcelReport(reports);
-    // await sendTelegramDocument(excelBuffer, `report_${dateDisplay}_${shiftType}.xlsx`, message);
+    // Отправляем изображение
+    console.log('📤 Отправка изображения в Telegram...');
+    return await sendTelegramPhoto(imageBuffer, caption);
+}
+
+/**
+ * Преобразование данных Supabase для таблицы
+ */
+function transformSupabaseDataForTable(operationalReports, personnelReports, dateISO, shiftType) {
+    const reports = {};
     
-    return await sendTelegramMessage(message);
+    operationalReports.forEach(report => {
+        if (report.report_date === dateISO && report.shift_type === shiftType) {
+            const dateKey = report.report_date.split('-').reverse().join('.');
+            const warehouse = report.warehouse;
+            const shift = report.shift_type;
+            
+            if (!reports[dateKey]) reports[dateKey] = {};
+            if (!reports[dateKey][warehouse]) reports[dateKey][warehouse] = {};
+            
+            reports[dateKey][warehouse][shift] = report.data || {};
+        }
+    });
+    
+    return reports;
 }
 
 /**

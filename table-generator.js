@@ -1,0 +1,244 @@
+// Генерация HTML таблицы и конвертация в изображение
+
+// Данные конфигурации (из config.js)
+const WAREHOUSES = [
+    "АРХАНГЕЛЬСК_ХАБ_НАХИМОВА",
+    "МУРМАНСК_ХАБ_ОБЪЕЗДНАЯ",
+    "ВЕЛИКИЙ_НОВГОРОД_ХАБ_НЕХИНСКАЯ",
+    "ПЕТРОЗАВОДСК_ХАБ_ПРЯЖИНСКОЕ",
+    "ПСКОВ_ХАБ_МАРГЕЛОВА",
+    "ПСКОВ_ХАБ_НОВЫЙ",
+    "СЫКТЫВКАР_ХАБ_ЛЕСОПАРКОВАЯ",
+    "СЫКТЫВКАР_ХАБ_ОКТЯБРЬСКИЙ",
+    "ЧЕРЕПОВЕЦ_ХАБ_СТРОЙИНДУСТРИИ",
+    "ВОЛОГДА_ХАБ_БЕЛОЗЕРСКОЕ",
+    "СПБ_ХАБ_Осиновая Роща",
+    "СПБ_Хаб_Парголово",
+    "СПБ_Хаб_Парголово_Блок_3",
+    "СПБ_Хаб_Парголово_Блок_4"
+];
+
+const CATEGORIES = [
+    {name: 'Обработка', type: 'number'},
+    {name: 'Персонал', type: 'number'},
+    {name: 'Окончание выдачи', type: 'time'},
+    {name: 'Обработка FBS', type: 'number'},
+    {name: 'Возвратный поток (Бэклог)', type: 'number'},
+    {name: 'Обезличка', type: 'single', label: 'Поддоны', unit: 'шт'},
+    {name: 'Эффективность', type: 'number'},
+    {name: 'Кол-во паллета-мест к отгрузке', type: 'triple',
+     fields: [{n: 'FBS', u: 'шт'}, {n: 'X-Dock', u: 'шт'}, {n: 'Возвраты', u: 'шт'}]},
+    {name: 'Хронь ХД', type: 'double',
+     fields: [{n: 'Сорт', u: 'шт'}, {n: 'Нон-Сорт', u: 'шт'}]},
+    {name: 'Риски', type: 'yesno'},
+    {name: 'Промежуточная Выдача', type: 'single', label: 'Значение', unit: 'шт'},
+    {name: '% не профиля', type: 'single', label: 'Процент', unit: '%'},
+    {name: 'Руководитель', type: 'select', options: ['Территория 1 Шутин Д.М.', 'Территория 2 Любавкская М.И.']}
+];
+
+// Функция удалена - используется transformSupabaseDataForTable из index.js
+
+/**
+ * Генерация HTML таблицы
+ */
+export function generateTableHTML(reports, dateISO, shiftType) {
+    const dateDisplay = dateISO.split('-').reverse().join('.');
+    const reportsData = reports[dateDisplay] || {};
+    
+    let html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000000;
+            color: #ffffff;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            padding: 20px;
+        }
+        .table-wrapper {
+            border: 1px solid #2d2d2d;
+            border-radius: 8px;
+            overflow: auto;
+            background: rgba(0, 0, 0, 0.85);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 10px;
+        }
+        th, td {
+            border: 1px solid rgba(71, 85, 105, 0.3);
+            padding: 4px 6px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        th {
+            background: linear-gradient(135deg, #2d2d2d 0%, #1e3a5f 100%);
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        td.negative, td.bad {
+            color: #ee0000;
+            font-weight: 900;
+        }
+        td.positive, td.good {
+            color: #43e97b;
+        }
+        .summary-total {
+            background: linear-gradient(135deg, #2d2d2d 0%, #1e3a5f 50%, #404040 100%);
+            color: #ffffff;
+            padding: 15px;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 10px;
+            border-radius: 8px;
+        }
+        h2 {
+            text-align: center;
+            margin-bottom: 15px;
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+    <h2>📊 Сводная таблица - ${dateDisplay} (${shiftType === 'day' ? 'Дневная' : 'Ночная'} смена)</h2>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Дата</th>
+                    <th>Склад</th>
+                    <th>ХА</th>
+`;
+
+    // Добавляем заголовки категорий
+    CATEGORIES.forEach(cat => {
+        if (cat.type === 'single' || cat.type === 'yesno' || cat.type === 'select') {
+            html += `<th>${cat.name}</th>`;
+        } else if (cat.type === 'triple') {
+            html += `<th colspan="3">${cat.name}</th>`;
+        } else if (cat.type === 'double') {
+            html += `<th colspan="2">${cat.name}</th>`;
+        } else {
+            html += `<th colspan="3">${cat.name}</th>`;
+        }
+    });
+    
+    html += `<th>Тип</th></tr><tr><th>Дата</th><th>Склад</th><th>ХА</th>`;
+    
+    // Вторая строка заголовков
+    CATEGORIES.forEach(cat => {
+        if (cat.type === 'single') {
+            html += `<th>${cat.unit || ''}</th>`;
+        } else if (cat.type === 'triple' || cat.type === 'double') {
+            cat.fields.forEach(f => html += `<th>${f.u}</th>`);
+        } else if (cat.type === 'time') {
+            html += '<th>План</th><th>Факт</th><th>Δ</th>';
+        } else if (cat.type === 'number') {
+            html += '<th>План</th><th>Факт</th><th>Δ</th>';
+        } else {
+            html += '<th></th>';
+        }
+    });
+    
+    html += '<th>Тип</th></tr></thead><tbody>';
+    
+    let totalVolumePlan = 0;
+    
+    // Добавляем строки данных
+    WAREHOUSES.forEach(wh => {
+        const whData = reportsData[wh] || {};
+        const shiftData = whData[shiftType];
+        
+        if (shiftData) {
+            html += `<tr><td>${dateDisplay}</td><td>${wh}</td><td>ХА</td>`;
+            
+            CATEGORIES.forEach(cat => {
+                const data = shiftData[cat.name];
+                
+                if (cat.type === 'single') {
+                    html += `<td>${data?.value || '-'}</td>`;
+                } else if (cat.type === 'yesno') {
+                    const val = data?.value;
+                    const isBad = val === true || val === 'yes';
+                    const className = isBad ? 'bad' : (val ? 'good' : '');
+                    html += `<td class="${className}">${val ? (isBad ? '❌' : '✅') : '-'}</td>`;
+                } else if (cat.type === 'select') {
+                    html += `<td>${data?.value || '-'}</td>`;
+                } else if (cat.type === 'triple') {
+                    cat.fields.forEach(f => html += `<td>${data?.[f.n] || '-'}</td>`);
+                } else if (cat.type === 'double') {
+                    cat.fields.forEach(f => html += `<td>${data?.[f.n] || '-'}</td>`);
+                } else if (cat.type === 'time') {
+                    html += `<td>${data?.plan || '-'}</td><td>${data?.fact || '-'}</td>`;
+                    const delta = data?.delta || '';
+                    const isGood = delta === 'Норма';
+                    html += `<td class="${isGood ? 'good' : (delta ? 'bad' : '')}">${delta || '-'}</td>`;
+                } else if (cat.type === 'number') {
+                    html += `<td>${data?.plan || '-'}</td><td>${data?.fact || '-'}</td>`;
+                    const delta = data?.delta;
+                    const deltaClass = typeof delta === 'number' ? (delta >= 0 ? 'positive' : 'negative') : '';
+                    html += `<td class="${deltaClass}">${delta !== undefined ? delta : '-'}</td>`;
+                    
+                    if (cat.name === 'Обработка') {
+                        totalVolumePlan += parseInt(data?.plan) || 0;
+                    }
+                }
+            });
+            
+            html += `<td>${shiftType === 'day' ? '☀️' : '🌙'}</td></tr>`;
+        } else {
+            // Пустая строка
+            html += `<tr><td>${dateDisplay}</td><td>${wh}</td><td>ХА</td>`;
+            const numCols = CATEGORIES.reduce((acc, cat) => {
+                if (cat.type === 'single' || cat.type === 'yesno' || cat.type === 'select' || cat.type === 'time') return acc + 1;
+                if (cat.type === 'triple') return acc + 3;
+                if (cat.type === 'double') return acc + 2;
+                return acc + 3;
+            }, 0);
+            for (let i = 0; i < numCols; i++) html += '<td>-</td>';
+            html += '<td>-</td></tr>';
+        }
+    });
+    
+    html += `</tbody></table></div>`;
+    html += `<div class="summary-total">📄 Итого по Объёму (план): ${totalVolumePlan}</div>`;
+    html += `</body></html>`;
+    
+    return html;
+}
+
+/**
+ * Конвертация HTML в изображение через Puppeteer
+ */
+export async function htmlToImage(html) {
+    const puppeteer = (await import('puppeteer')).default;
+    
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    
+    try {
+        const page = await browser.newPage();
+        await page.setContent(html, { waitUntil: 'networkidle0' });
+        await page.setViewport({ width: 1920, height: 1080 });
+        
+        const screenshot = await page.screenshot({
+            type: 'png',
+            fullPage: true,
+            clip: null
+        });
+        
+        return screenshot;
+    } finally {
+        await browser.close();
+    }
+}
+
