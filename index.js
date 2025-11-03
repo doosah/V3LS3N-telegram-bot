@@ -477,8 +477,11 @@ cron.schedule('0 22 * * *', async () => {
 // Health check endpoint (для облачных платформ)
 const PORT = process.env.PORT || 3000;
 
-const server = http.createServer(async (req, res) => {
-    if (req.url === '/health' || req.url === '/') {
+    const server = http.createServer(async (req, res) => {
+        // Логируем все запросы для отладки
+        console.log(`📥 ${req.method} ${req.url}`);
+        
+        if (req.url === '/health' || req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
             status: 'ok', 
