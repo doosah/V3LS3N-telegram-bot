@@ -386,6 +386,40 @@ const server = http.createServer(async (req, res) => {
                 message: error.message
             }));
         }
+    } else if (req.url.startsWith('/send-report') && req.method === 'GET') {
+        // Ручная отправка отчёта
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        try {
+            // Парсим параметры: ?shift=day|night (по умолчанию определяем по времени)
+            const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+            let shiftType = urlObj.searchParams.get('shift');
+            
+            // Если не указана смена, определяем по текущему времени
+            if (!shiftType) {
+                const now = new Date();
+                const moscowTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Moscow' }));
+                const hour = moscowTime.getHours();
+                // Дневная смена: 6:00 - 18:00, Ночная: 18:00 - 6:00
+                shiftType = (hour >= 6 && hour < 18) ? 'day' : 'night';
+            }
+            
+            const dateISO = getCurrentDateISO();
+            console.log(`📊 Ручная отправка отчёта: ${getCurrentDate()}, смена: ${shiftType}`);
+            
+            const result = await sendFinalReport(dateISO, shiftType);
+            
+            res.end(JSON.stringify({ 
+                status: result ? 'success' : 'error',
+                message: result ? `Отчёт отправлен (${shiftType === 'day' ? 'Дневная' : 'Ночная'} смена)` : 'Ошибка отправки',
+                date: getCurrentDate(),
+                shift: shiftType
+            }));
+        } catch (error) {
+            res.end(JSON.stringify({ 
+                status: 'error',
+                message: error.message
+            }));
+        }
     } else {
         res.writeHead(404);
         res.end('Not found');
