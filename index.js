@@ -110,119 +110,173 @@ async function sendTelegramMessage(text, chatId = TELEGRAM_CHAT_ID) {
  */
 async function sendTelegramPhoto(buffer, caption = '', chatId = TELEGRAM_CHAT_ID) {
     try {
-        const FormDataModule = await import('form-data');
-        const FormData = FormDataModule.default;
-        const httpsModule = await import('https');
-        const https = httpsModule.default || httpsModule;
-        
-        const formData = new FormData();
-        
-        formData.append('chat_id', chatId);
-        formData.append('photo', buffer, {
-            filename: 'table.png',
-            contentType: 'image/png'
-        });
-        if (caption) {
-            formData.append('caption', caption);
-            formData.append('parse_mode', 'HTML');
-        }
-        
         console.log(`📤 Отправка изображения (${buffer.length} байт) в Telegram...`);
         console.log(`📤 Chat ID: ${chatId}`);
         console.log(`📤 BOT API URL: ${BOT_API_URL}`);
         
-        // Используем https модуль для отправки multipart/form-data
-        const url = new URL(`${BOT_API_URL}/sendPhoto`);
-        
-        return new Promise((resolve, reject) => {
-            // Получаем headers от form-data (включая Content-Length)
-            const formHeaders = formData.getHeaders();
-            console.log('📤 Form headers:', Object.keys(formHeaders));
+        // Пробуем два способа отправки - сначала через form-data, потом через fetch
+        try {
+            const FormDataModule = await import('form-data');
+            const FormData = FormDataModule.default;
+            const httpsModule = await import('https');
+            const https = httpsModule.default || httpsModule;
             
-            // Пытаемся получить длину, если доступно
-            let contentLength = null;
-            try {
-                if (typeof formData.getLengthSync === 'function') {
-                    contentLength = formData.getLengthSync();
-                } else if (typeof formData.getLength === 'function') {
-                    // Асинхронная версия
-                    formData.getLength((err, length) => {
-                        if (!err && length) {
-                            contentLength = length;
+            const formData = new FormData();
+            
+            formData.append('chat_id', chatId);
+            formData.append('photo', buffer, {
+                filename: 'table.png',
+                contentType: 'image/png'
+            });
+            if (caption) {
+                formData.append('caption', caption);
+                formData.append('parse_mode', 'HTML');
+            }
+            
+            // Используем https модуль для отправки multipart/form-data
+            const url = new URL(`${BOT_API_URL}/sendPhoto`);
+            
+            return new Promise((resolve, reject) => {
+                // Получаем headers от form-data (включая Content-Length)
+                const formHeaders = formData.getHeaders();
+                console.log('📤 Form headers:', Object.keys(formHeaders));
+                
+                // Пытаемся получить длину, если доступно
+                let contentLength = null;
+                try {
+                    if (typeof formData.getLengthSync === 'function') {
+                        contentLength = formData.getLengthSync();
+                    } else if (typeof formData.getLength === 'function') {
+                        // Асинхронная версия
+                        formData.getLength((err, length) => {
+                            if (!err && length) {
+                                contentLength = length;
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.log('⚠️ Не удалось получить Content-Length, form-data установит его автоматически');
+                }
+                
+                const options = {
+                    hostname: url.hostname,
+                    port: url.port || 443,
+                    path: url.pathname + url.search,
+                    method: 'POST',
+                    headers: {
+                        ...formHeaders,
+                        ...(contentLength ? { 'Content-Length': contentLength } : {})
+                    }
+                };
+                
+                console.log('📤 Sending request to:', url.hostname + url.pathname);
+                console.log('📤 Request headers:', Object.keys(options.headers));
+                if (contentLength) {
+                    console.log(`📤 Content-Length: ${contentLength} bytes`);
+                }
+                
+                const req = https.default ? https.default.request(options, handleResponse) : https.request(options, handleResponse);
+                
+                function handleResponse(res) {
+                    console.log(`📤 Response status: ${res.statusCode}`);
+                    console.log(`📤 Response headers:`, JSON.stringify(res.headers, null, 2));
+                    
+                    let responseData = '';
+                    
+                    res.on('data', (chunk) => {
+                        responseData += chunk;
+                    });
+                    
+                    res.on('end', () => {
+                        console.log(`📤 Response body length: ${responseData.length} bytes`);
+                        try {
+                            const data = JSON.parse(responseData);
+                            console.log('📤 Response data:', JSON.stringify(data, null, 2));
+                            
+                            if (data.ok) {
+                                console.log('✅ Изображение отправлено в Telegram');
+                                resolve(true);
+                            } else {
+                                console.error('❌ Ошибка отправки изображения в Telegram:', JSON.stringify(data, null, 2));
+                                console.error('❌ Полный ответ от Telegram API:', responseData);
+                                reject(new Error(`Telegram API error: ${data.description || 'Unknown error'}`));
+                            }
+                        } catch (parseError) {
+                            console.error('❌ Ошибка парсинга ответа:', parseError.message);
+                            console.error('Response body (first 1000 chars):', responseData.substring(0, 1000));
+                            console.error('Full response body:', responseData);
+                            reject(new Error(`Parse error: ${parseError.message}. Response: ${responseData.substring(0, 200)}`));
                         }
                     });
                 }
-            } catch (e) {
-                console.log('⚠️ Не удалось получить Content-Length, form-data установит его автоматически');
-            }
+                
+                req.on('error', (error) => {
+                    console.error('❌ Ошибка запроса:', error.message);
+                    console.error('Stack:', error.stack);
+                    reject(error);
+                });
+                
+                // Отправляем formData через pipe
+                console.log('📤 Piping form-data to request...');
+                formData.pipe(req);
+                
+                // Обработка ошибок pipe
+                formData.on('error', (error) => {
+                    console.error('❌ Ошибка form-data:', error.message);
+                    req.destroy();
+                    reject(error);
+                });
+                
+                // Добавляем таймаут для запроса
+                req.setTimeout(60000, () => {
+                    console.error('❌ Таймаут запроса (60 секунд)');
+                    req.destroy();
+                    reject(new Error('Request timeout'));
+                });
+            });
+        } catch (formDataError) {
+            console.error('❌ Ошибка при использовании form-data:', formDataError.message);
+            console.error('Stack:', formDataError.stack);
+            console.log('⚠️ Пробуем альтернативный способ через fetch...');
             
-            const options = {
-                hostname: url.hostname,
-                port: url.port || 443,
-                path: url.pathname + url.search,
-                method: 'POST',
-                headers: {
-                    ...formHeaders,
-                    ...(contentLength ? { 'Content-Length': contentLength } : {})
+            // Альтернативный способ через fetch
+            try {
+                const FormDataModule = await import('form-data');
+                const FormData = FormDataModule.default;
+                const formData = new FormData();
+                
+                formData.append('chat_id', chatId);
+                formData.append('photo', buffer, {
+                    filename: 'table.png',
+                    contentType: 'image/png'
+                });
+                if (caption) {
+                    formData.append('caption', caption);
+                    formData.append('parse_mode', 'HTML');
                 }
-            };
-            
-            console.log('📤 Sending request to:', url.hostname + url.pathname);
-            console.log('📤 Request headers:', Object.keys(options.headers));
-            if (contentLength) {
-                console.log(`📤 Content-Length: ${contentLength} bytes`);
-            }
-            
-            const req = https.default ? https.default.request(options, handleResponse) : https.request(options, handleResponse);
-            
-            function handleResponse(res) {
-                console.log(`📤 Response status: ${res.statusCode}`);
-                console.log(`📤 Response headers:`, JSON.stringify(res.headers, null, 2));
                 
-                let responseData = '';
-                
-                res.on('data', (chunk) => {
-                    responseData += chunk;
+                console.log('📤 Пробуем отправку через fetch...');
+                const response = await fetch(`${BOT_API_URL}/sendPhoto`, {
+                    method: 'POST',
+                    body: formData,
+                    headers: formData.getHeaders()
                 });
                 
-                res.on('end', () => {
-                    console.log(`📤 Response body length: ${responseData.length} bytes`);
-                    try {
-                        const data = JSON.parse(responseData);
-                        console.log('📤 Response data:', JSON.stringify(data, null, 2));
-                        
-                        if (data.ok) {
-                            console.log('✅ Изображение отправлено в Telegram');
-                            resolve(true);
-                        } else {
-                            console.error('❌ Ошибка отправки изображения в Telegram:', JSON.stringify(data, null, 2));
-                            reject(new Error(`Telegram API error: ${data.description || 'Unknown error'}`));
-                        }
-                    } catch (parseError) {
-                        console.error('❌ Ошибка парсинга ответа:', parseError.message);
-                        console.error('Response body (first 500 chars):', responseData.substring(0, 500));
-                        reject(new Error(`Parse error: ${parseError.message}`));
-                    }
-                });
+                const data = await response.json();
+                console.log('📤 Fetch response:', JSON.stringify(data, null, 2));
+                
+                if (data.ok) {
+                    console.log('✅ Изображение отправлено в Telegram (через fetch)');
+                    return true;
+                } else {
+                    throw new Error(`Telegram API error: ${data.description || 'Unknown error'}`);
+                }
+            } catch (fetchError) {
+                console.error('❌ Ошибка при использовании fetch:', fetchError.message);
+                console.error('Stack:', fetchError.stack);
+                throw formDataError; // Пробрасываем исходную ошибку
             }
-            
-            req.on('error', (error) => {
-                console.error('❌ Ошибка запроса:', error.message);
-                console.error('Stack:', error.stack);
-                reject(error);
-            });
-            
-            // Отправляем formData через pipe
-            console.log('📤 Piping form-data to request...');
-            formData.pipe(req);
-            
-            // Обработка ошибок pipe
-            formData.on('error', (error) => {
-                console.error('❌ Ошибка form-data:', error.message);
-                req.destroy();
-                reject(error);
-            });
-        });
+        }
     } catch (error) {
         console.error('❌ Ошибка отправки изображения в Telegram:', error.message);
         console.error('Stack:', error.stack);
@@ -419,9 +473,8 @@ async function sendFinalReport(dateISO, shiftType) {
         const html = generateTableHTML(transformedReports, dateISO, shiftType);
         console.log(`✅ HTML сгенерирован, длина: ${html.length} символов`);
         
-        if (html.length < 100) {
-            throw new Error(`HTML слишком короткий (${html.length} символов), возможно нет данных`);
-        }
+        // Даже если данных нет, генерируем изображение с пустой таблицей
+        // Таблица будет показывать все склады с пустыми значениями
         
         // Конвертируем в изображение
         console.log('🖼️ Конвертация HTML в изображение через Puppeteer...');
