@@ -112,6 +112,9 @@ async function sendTelegramPhoto(buffer, caption = '', chatId = TELEGRAM_CHAT_ID
     try {
         const FormDataModule = await import('form-data');
         const FormData = FormDataModule.default;
+        const httpsModule = await import('https');
+        const https = httpsModule.default || httpsModule;
+        
         const formData = new FormData();
         
         formData.append('chat_id', chatId);
@@ -125,26 +128,105 @@ async function sendTelegramPhoto(buffer, caption = '', chatId = TELEGRAM_CHAT_ID
         }
         
         console.log(`📤 Отправка изображения (${buffer.length} байт) в Telegram...`);
+        console.log(`📤 Chat ID: ${chatId}`);
+        console.log(`📤 BOT API URL: ${BOT_API_URL}`);
         
-        const response = await fetch(`${BOT_API_URL}/sendPhoto`, {
-            method: 'POST',
-            body: formData,
-            headers: formData.getHeaders ? formData.getHeaders() : {}
+        // Используем https модуль для отправки multipart/form-data
+        const url = new URL(`${BOT_API_URL}/sendPhoto`);
+        
+        return new Promise((resolve, reject) => {
+            // Получаем headers от form-data (включая Content-Length)
+            const formHeaders = formData.getHeaders();
+            console.log('📤 Form headers:', Object.keys(formHeaders));
+            
+            // Пытаемся получить длину, если доступно
+            let contentLength = null;
+            try {
+                if (typeof formData.getLengthSync === 'function') {
+                    contentLength = formData.getLengthSync();
+                } else if (typeof formData.getLength === 'function') {
+                    // Асинхронная версия
+                    formData.getLength((err, length) => {
+                        if (!err && length) {
+                            contentLength = length;
+                        }
+                    });
+                }
+            } catch (e) {
+                console.log('⚠️ Не удалось получить Content-Length, form-data установит его автоматически');
+            }
+            
+            const options = {
+                hostname: url.hostname,
+                port: url.port || 443,
+                path: url.pathname + url.search,
+                method: 'POST',
+                headers: {
+                    ...formHeaders,
+                    ...(contentLength ? { 'Content-Length': contentLength } : {})
+                }
+            };
+            
+            console.log('📤 Sending request to:', url.hostname + url.pathname);
+            console.log('📤 Request headers:', Object.keys(options.headers));
+            if (contentLength) {
+                console.log(`📤 Content-Length: ${contentLength} bytes`);
+            }
+            
+            const req = https.default ? https.default.request(options, handleResponse) : https.request(options, handleResponse);
+            
+            function handleResponse(res) {
+                console.log(`📤 Response status: ${res.statusCode}`);
+                console.log(`📤 Response headers:`, JSON.stringify(res.headers, null, 2));
+                
+                let responseData = '';
+                
+                res.on('data', (chunk) => {
+                    responseData += chunk;
+                });
+                
+                res.on('end', () => {
+                    console.log(`📤 Response body length: ${responseData.length} bytes`);
+                    try {
+                        const data = JSON.parse(responseData);
+                        console.log('📤 Response data:', JSON.stringify(data, null, 2));
+                        
+                        if (data.ok) {
+                            console.log('✅ Изображение отправлено в Telegram');
+                            resolve(true);
+                        } else {
+                            console.error('❌ Ошибка отправки изображения в Telegram:', JSON.stringify(data, null, 2));
+                            reject(new Error(`Telegram API error: ${data.description || 'Unknown error'}`));
+                        }
+                    } catch (parseError) {
+                        console.error('❌ Ошибка парсинга ответа:', parseError.message);
+                        console.error('Response body (first 500 chars):', responseData.substring(0, 500));
+                        reject(new Error(`Parse error: ${parseError.message}`));
+                    }
+                });
+            }
+            
+            req.on('error', (error) => {
+                console.error('❌ Ошибка запроса:', error.message);
+                console.error('Stack:', error.stack);
+                reject(error);
+            });
+            
+            // Отправляем formData через pipe
+            console.log('📤 Piping form-data to request...');
+            formData.pipe(req);
+            
+            // Обработка ошибок pipe
+            formData.on('error', (error) => {
+                console.error('❌ Ошибка form-data:', error.message);
+                req.destroy();
+                reject(error);
+            });
         });
-        
-        const data = await response.json();
-        
-        if (data.ok) {
-            console.log('✅ Изображение отправлено в Telegram');
-            return true;
-        } else {
-            console.error('❌ Ошибка отправки изображения в Telegram:', JSON.stringify(data, null, 2));
-            return false;
-        }
     } catch (error) {
         console.error('❌ Ошибка отправки изображения в Telegram:', error.message);
         console.error('Stack:', error.stack);
-        return false;
+        throw error; // Пробрасываем ошибку дальше, чтобы не отправлять текстовое сообщение
     }
 }
 
@@ -360,16 +442,24 @@ async function sendFinalReport(dateISO, shiftType) {
         
         // Отправляем изображение
         console.log('📤 Отправка изображения в Telegram...');
-        const photoResult = await sendTelegramPhoto(imageBuffer, caption);
-        
-        if (!photoResult) {
+        try {
+            const photoResult = await sendTelegramPhoto(imageBuffer, caption);
+            
+            if (photoResult) {
+                console.log('✅ Итоговый отчёт успешно отправлен в Telegram');
+                return true;
+            } else {
+                throw new Error('sendTelegramPhoto вернул false');
+            }
+        } catch (photoError) {
+            console.error('❌ Ошибка отправки изображения:', photoError.message);
+            console.error('Stack:', photoError.stack);
             // Если не удалось отправить изображение, отправляем текстовое сообщение
             console.log('⚠️ Не удалось отправить изображение в Telegram, отправляю текстовое сообщение...');
-            return await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось отправить изображение таблицы</i>');
+            await sendTelegramMessage(caption + '\n\n⚠️ <i>Не удалось отправить изображение таблицы</i>\n\n' + 
+                                     `<i>Ошибка: ${photoError.message}</i>`);
+            return false;
         }
-        
-        console.log('✅ Итоговый отчёт успешно отправлен в Telegram');
-        return photoResult;
     } catch (error) {
         console.error('❌ Критическая ошибка генерации/отправки отчёта:', error.message);
         console.error('Stack:', error.stack);
@@ -389,19 +479,50 @@ async function sendFinalReport(dateISO, shiftType) {
  */
 function transformSupabaseDataForTable(operationalReports, personnelReports, dateISO, shiftType) {
     const reports = {};
+    const dateKey = dateISO.split('-').reverse().join('.');
     
+    console.log(`📊 Преобразование данных: дата ${dateISO} (${dateKey}), смена ${shiftType}`);
+    console.log(`📊 Операционных отчетов: ${operationalReports.length}`);
+    console.log(`📊 Отчетов персонала: ${personnelReports.length}`);
+    
+    if (!reports[dateKey]) reports[dateKey] = {};
+    
+    // Обрабатываем операционные отчеты
     operationalReports.forEach(report => {
+        console.log(`📊 Обработка операционного отчета:`, {
+            report_date: report.report_date,
+            shift_type: report.shift_type,
+            warehouse: report.warehouse,
+            hasData: !!report.data
+        });
+        
         if (report.report_date === dateISO && report.shift_type === shiftType) {
-            const dateKey = report.report_date.split('-').reverse().join('.');
             const warehouse = report.warehouse;
             const shift = report.shift_type;
             
-            if (!reports[dateKey]) reports[dateKey] = {};
             if (!reports[dateKey][warehouse]) reports[dateKey][warehouse] = {};
             
-            reports[dateKey][warehouse][shift] = report.data || {};
+            // report.data может быть объектом или строкой JSON
+            let reportData = {};
+            if (report.data) {
+                if (typeof report.data === 'string') {
+                    try {
+                        reportData = JSON.parse(report.data);
+                    } catch (e) {
+                        console.error('❌ Ошибка парсинга JSON данных:', e);
+                        reportData = {};
+                    }
+                } else if (typeof report.data === 'object') {
+                    reportData = report.data;
+                }
+            }
+            
+            reports[dateKey][warehouse][shift] = reportData;
+            console.log(`✅ Добавлен отчет для ${warehouse}, категорий: ${Object.keys(reportData).length}`);
         }
     });
+    
+    console.log(`📊 Итоговая структура:`, Object.keys(reports[dateKey] || {}));
     
     return reports;
 }
@@ -477,11 +598,12 @@ cron.schedule('0 22 * * *', async () => {
 // Health check endpoint (для облачных платформ)
 const PORT = process.env.PORT || 3000;
 
-    const server = http.createServer(async (req, res) => {
-        // Логируем все запросы для отладки
-        console.log(`📥 ${req.method} ${req.url}`);
-        
-        if (req.url === '/health' || req.url === '/') {
+const server = http.createServer(async (req, res) => {
+    // Логируем все запросы для отладки
+    const urlPath = req.url.split('?')[0]; // Убираем query параметры для проверки
+    console.log(`📥 ${req.method} ${req.url} -> ${urlPath}`);
+    
+    if (urlPath === '/health' || urlPath === '/') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
             status: 'ok', 
@@ -490,7 +612,7 @@ const PORT = process.env.PORT || 3000;
             chat_id: TELEGRAM_CHAT_ID,
             supabase_configured: !!SUPABASE_URL && SUPABASE_URL !== 'YOUR_SUPABASE_URL'
         }));
-    } else if (req.url === '/test' && req.method === 'GET') {
+    } else if (urlPath === '/test' && req.method === 'GET') {
         // Тестовый endpoint для проверки отправки сообщения
         res.writeHead(200, { 'Content-Type': 'application/json' });
         try {
@@ -505,7 +627,7 @@ const PORT = process.env.PORT || 3000;
                 message: error.message
             }));
         }
-    } else if (req.url.startsWith('/send-report') && req.method === 'GET') {
+    } else if (urlPath === '/send-report' && req.method === 'GET') {
         // Ручная отправка отчёта
         res.writeHead(200, { 'Content-Type': 'application/json' });
         try {
@@ -539,7 +661,7 @@ const PORT = process.env.PORT || 3000;
                 message: error.message
             }));
         }
-    } else if (req.url.startsWith('/test-image') && req.method === 'GET') {
+    } else if (urlPath === '/test-image' && req.method === 'GET') {
         // Тестовый endpoint для проверки генерации изображения
         res.writeHead(200, { 'Content-Type': 'application/json' });
         try {
@@ -592,6 +714,7 @@ const PORT = process.env.PORT || 3000;
             }));
         }
     } else {
+        console.log(`❌ 404: ${req.method} ${req.url}`);
         res.writeHead(404);
         res.end('Not found');
     }
