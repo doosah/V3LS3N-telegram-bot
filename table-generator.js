@@ -18,7 +18,8 @@ const WAREHOUSES = [
     "СПБ_Хаб_Парголово_Блок_4"
 ];
 
-const CATEGORIES = [
+// Категории для операционных отчетов
+const OPERATIONAL_CATEGORIES = [
     {name: 'Обработка', type: 'number'},
     {name: 'Персонал', type: 'number'},
     {name: 'Окончание выдачи', type: 'time'},
@@ -36,6 +37,22 @@ const CATEGORIES = [
     {name: 'Руководитель', type: 'select', options: ['Территория 1 Шутин Д.М.', 'Территория 2 Любавкская М.И.']}
 ];
 
+// Категории для отчетов по персоналу
+const PERSONNEL_CATEGORIES = [
+    {name: 'Штат', type: 'number'},
+    {name: 'Ozon Job', type: 'personnel_ozon'},
+    {name: 'PB', type: 'single', unit: 'шт'},
+    {name: 'Командир...', type: 'single', unit: 'шт'},
+    {name: 'Total', type: 'number'},
+    {name: 'Производство', type: 'single', unit: '%'},
+    {name: 'Причины невыхода', type: 'single', unit: 'шт'},
+    {name: 'Комментарии', type: 'single', unit: 'Текст'},
+    {name: 'Руководитель', type: 'select', options: ['Территория 1 Шутин Д.М.', 'Территория 2 Любавкская М.И.']}
+];
+
+// Для обратной совместимости
+const CATEGORIES = OPERATIONAL_CATEGORIES;
+
 // Функция удалена - используется transformSupabaseDataForTable из index.js
 
 /**
@@ -51,11 +68,13 @@ function parseTimeToMin(timeStr) {
 }
 
 /**
- * Генерация HTML таблицы
+ * Генерация HTML таблицы для конкретного типа отчета
  */
-export function generateTableHTML(reports, dateISO, shiftType) {
+function generateTableHTMLForCategories(reports, dateISO, shiftType, categories, reportType, summaryField = null) {
     const dateDisplay = dateISO.split('-').reverse().join('.');
     const reportsData = reports[dateDisplay] || {};
+    
+    const reportTypeName = reportType === 'operational' ? 'Операционные отчеты' : 'Отчеты по персоналу';
     
     let html = `
 <!DOCTYPE html>
@@ -165,7 +184,7 @@ export function generateTableHTML(reports, dateISO, shiftType) {
     </style>
 </head>
 <body>
-    <h2>📊 Сводная таблица - ${dateDisplay} (${shiftType === 'day' ? 'Дневная' : 'Ночная'} смена)</h2>
+    <h2>📊 ${reportTypeName} - ${dateDisplay} (${shiftType === 'day' ? 'Дневная' : 'Ночная'} смена)</h2>
     <div class="table-wrapper">
         <table>
             <thead>
@@ -176,13 +195,15 @@ export function generateTableHTML(reports, dateISO, shiftType) {
 `;
 
     // Добавляем заголовки категорий
-    CATEGORIES.forEach(cat => {
+    categories.forEach(cat => {
         if (cat.type === 'single' || cat.type === 'yesno' || cat.type === 'select') {
             html += `<th>${cat.name}</th>`;
         } else if (cat.type === 'triple') {
             html += `<th colspan="3">${cat.name}</th>`;
         } else if (cat.type === 'double') {
             html += `<th colspan="2">${cat.name}</th>`;
+        } else if (cat.type === 'personnel_ozon') {
+            html += `<th colspan="4">${cat.name}</th>`;
         } else {
             html += `<th colspan="3">${cat.name}</th>`;
         }
@@ -191,11 +212,13 @@ export function generateTableHTML(reports, dateISO, shiftType) {
     html += `<th>Тип</th></tr><tr><th>Дата</th><th>Склад</th><th>ХА</th>`;
     
     // Вторая строка заголовков
-    CATEGORIES.forEach(cat => {
+    categories.forEach(cat => {
         if (cat.type === 'single') {
             html += `<th>${cat.unit || ''}</th>`;
         } else if (cat.type === 'triple' || cat.type === 'double') {
             cat.fields.forEach(f => html += `<th>${f.u}</th>`);
+        } else if (cat.type === 'personnel_ozon') {
+            html += '<th>План</th><th>Факт</th><th>Капац.</th><th>Доля</th>';
         } else if (cat.type === 'time') {
             html += '<th>План</th><th>Факт</th><th>Δ</th>';
         } else if (cat.type === 'number') {
@@ -207,7 +230,7 @@ export function generateTableHTML(reports, dateISO, shiftType) {
     
     html += '<th>Тип</th></tr></thead><tbody>';
     
-    let totalVolumePlan = 0;
+    let totalSum = 0;
     
     // Добавляем строки данных
     WAREHOUSES.forEach(wh => {
@@ -217,7 +240,7 @@ export function generateTableHTML(reports, dateISO, shiftType) {
         if (shiftData) {
             html += `<tr><td>${dateDisplay}</td><td>${wh}</td><td>ХА</td>`;
             
-            CATEGORIES.forEach(cat => {
+            categories.forEach(cat => {
                 const data = shiftData[cat.name];
                 
                 if (cat.type === 'single') {
@@ -233,6 +256,12 @@ export function generateTableHTML(reports, dateISO, shiftType) {
                     cat.fields.forEach(f => html += `<td>${data?.[f.n] || '-'}</td>`);
                 } else if (cat.type === 'double') {
                     cat.fields.forEach(f => html += `<td>${data?.[f.n] || '-'}</td>`);
+                } else if (cat.type === 'personnel_ozon') {
+                    const plan = data?.plan || '-';
+                    const fact = data?.fact || '-';
+                    const capacity = data?.capacity || '-';
+                    const share = data?.share || '-';
+                    html += `<td>${plan}</td><td>${fact}</td><td>${capacity}</td><td>${share}</td>`;
                 } else if (cat.type === 'time') {
                     const plan = data?.plan || '';
                     const fact = data?.fact || '';
@@ -266,8 +295,8 @@ export function generateTableHTML(reports, dateISO, shiftType) {
                     }
                     html += `<td class="${deltaClass}">${delta !== '' ? delta : '-'}</td>`;
                     
-                    if (cat.name === 'Обработка') {
-                        totalVolumePlan += plan;
+                    if (summaryField && cat.name === summaryField) {
+                        totalSum += plan;
                     }
                 }
             });
@@ -276,10 +305,11 @@ export function generateTableHTML(reports, dateISO, shiftType) {
         } else {
             // Пустая строка
             html += `<tr><td>${dateDisplay}</td><td>${wh}</td><td>ХА</td>`;
-            const numCols = CATEGORIES.reduce((acc, cat) => {
+            const numCols = categories.reduce((acc, cat) => {
                 if (cat.type === 'single' || cat.type === 'yesno' || cat.type === 'select' || cat.type === 'time') return acc + 1;
                 if (cat.type === 'triple') return acc + 3;
                 if (cat.type === 'double') return acc + 2;
+                if (cat.type === 'personnel_ozon') return acc + 4;
                 return acc + 3;
             }, 0);
             for (let i = 0; i < numCols; i++) html += '<td>-</td>';
@@ -288,10 +318,34 @@ export function generateTableHTML(reports, dateISO, shiftType) {
     });
     
     html += `</tbody></table></div>`;
-    html += `<div class="summary-total">📄 Итого по Объёму (план): ${totalVolumePlan}</div>`;
+    if (summaryField && totalSum > 0) {
+        const summaryFieldName = summaryField === 'Обработка' ? 'Объёму' : summaryField === 'Штат' ? 'Штат' : summaryField;
+        html += `<div class="summary-total">📄 Итого по ${summaryFieldName} (план): ${totalSum}</div>`;
+    }
     html += `</body></html>`;
     
     return html;
+}
+
+/**
+ * Генерация HTML таблицы для операционных отчетов
+ */
+export function generateOperationalTableHTML(reports, dateISO, shiftType) {
+    return generateTableHTMLForCategories(reports, dateISO, shiftType, OPERATIONAL_CATEGORIES, 'operational', 'Обработка');
+}
+
+/**
+ * Генерация HTML таблицы для отчетов по персоналу
+ */
+export function generatePersonnelTableHTML(reports, dateISO, shiftType) {
+    return generateTableHTMLForCategories(reports, dateISO, shiftType, PERSONNEL_CATEGORIES, 'personnel', 'Штат');
+}
+
+/**
+ * Генерация HTML таблицы (для обратной совместимости)
+ */
+export function generateTableHTML(reports, dateISO, shiftType) {
+    return generateTableHTMLForCategories(reports, dateISO, shiftType, CATEGORIES, 'operational', 'Обработка');
 }
 
 /**

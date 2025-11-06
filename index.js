@@ -305,8 +305,15 @@ async function sendTelegramDocument(buffer, filename, caption = '', chatId = TEL
 async function loadReportsFromSupabase(date, shiftType) {
     try {
         // Преобразуем дату в формат YYYY-MM-DD для Supabase
-        const dateParts = date.split('.');
-        const supabaseDate = dateParts.length === 3 ? `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}` : date;
+        // Если дата уже в формате YYYY-MM-DD, используем как есть
+        let supabaseDate = date;
+        if (date.includes('.')) {
+            // Если дата в формате DD.MM.YYYY, преобразуем
+            const dateParts = date.split('.');
+            if (dateParts.length === 3) {
+                supabaseDate = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`;
+            }
+        }
         
         // Загружаем операционные отчеты
         const { data: operationalData, error: operationalError } = await supabase
