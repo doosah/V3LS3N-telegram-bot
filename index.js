@@ -131,7 +131,6 @@ async function sendTelegramPhoto(buffer, caption = '', chatId = TELEGRAM_CHAT_ID
             filename: 'table.png',
             contentType: 'image/png'
         });
-        formData.append('thumb', buffer); // Превью для отображения как фото
         if (caption) {
             formData.append('caption', caption);
             formData.append('parse_mode', 'HTML');
